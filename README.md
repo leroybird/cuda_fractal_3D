@@ -11,6 +11,16 @@ nvcc mandelbulb.cu -o fractal -lsfml-window  -lsfml-graphics -lsfml-system
 # Controls
 The arrow keys control the rotation, middle mouse button crontrols the zoom in and zoom out, P starts/stops the animation.
 
-# Screen shot
+#### Switching fractals
+| Key           |  Fractal      |
+| ------------- |:-------------:| 
+| 1             | mandelbox     |
+| 2             |  mandelbulb   |
+
+
+# Screen shots
+mandelbox
+![mandelbulb](mandelbox.png)
+mandelbulb
 ![mandelbulb](mandelbulb.png)
 
