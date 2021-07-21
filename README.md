@@ -15,10 +15,10 @@ The arrow keys control the rotation, middle mouse button crontrols the zoom in a
 | Key           |  Fractal      |
 | ------------- |:-------------:| 
 | 1             | mandelbox     |
-| 2             |  mandelbulb   |
+| 2             | mandelbulb    |
 
 
-# Screen shots
+# Screenshots
 mandelbox
 ![mandelbulb](mandelbox.png)
 mandelbulb
