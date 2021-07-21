@@ -22,7 +22,6 @@ const float MIN_DIST = 1e-5;
 // How many ray marches we before stopping
 const int MAX_RAY_ITER = 128;
 
-float3 rayOrigin = make_float3(0.f, 0.f, -2.f);
 
 void mandelbrotGPU(sf::Uint8 *, float);
 
@@ -51,8 +50,13 @@ __host__ __device__ float boxFold(float component)
 // Define the distance estimation function so we can dynamically change the distance function at runtime
 typedef float (*distanceFunction)(float3, float);
 
-__host__ __device__ float distEstMandelBox(float3 pos, float scale)
+__host__ __device__ float distEstMandelBox(float3 pos, float time)
 {
+  // Animation Code
+  // For MandelBox, we aviod the range [1, -1] and instead display from [-3, -1] and [1, 3]
+  float scale = fmodf(time / 4, 4) - 2;
+  scale =  scale < 0 ? scale - 1 : scale + 1;
+
   // Returns the distance (magnitude) from a point to the mandelbulb fractal.
   float3 offset = pos;
   float dr = 1.0;
@@ -84,12 +88,16 @@ __host__ __device__ float distEstMandelBox(float3 pos, float scale)
   return length(pos) / abs(dr);
 }
 
-__host__ __device__ float distEstMandelBulb(float3 pos, float power)
+__host__ __device__ float distEstMandelBulb(float3 pos, float time)
 {
   // Returns the distance (magnitude) from a point to the mandelbulb fractal. Based off
   // http://blog.hvidtfeldts.net/index.php/2011/09/distance-estimated-3d-fractals-v-the-mandelbulb-different-de-approximations/
   float3 z = pos;
 
+  // Animation code
+  float power = fmodf(time / 3, 3) + 1;
+  power =  power * power;
+  
   float dr = 1.0;
   float r = 0.0;
   for (int i = 0; i < MAX_ITER; i++)
@@ -116,7 +124,7 @@ __host__ __device__ float distEstMandelBulb(float3 pos, float power)
   return 0.5 * log(r) * r / dr;
 }
 
-__host__ __device__ float march(float3 origin, float3 direction, float power, distanceFunction func)
+__host__ __device__ float march(float3 origin, float3 direction, float time, distanceFunction func)
 {
   // We can slowly march foward in the current direction upto the maximum number of ray iterations.
   // The distance esimation fractal is passed as an argument.
@@ -125,7 +133,7 @@ __host__ __device__ float march(float3 origin, float3 direction, float power, di
   for (; steps < MAX_RAY_ITER; steps++)
   {
     float3 p = origin + direction * total_dist;
-    float distance = func(p, power);
+    float distance = func(p, time);
     total_dist += distance;
     if (distance < MIN_DIST)
       break;
@@ -135,10 +143,10 @@ __host__ __device__ float march(float3 origin, float3 direction, float power, di
 }
 
 
-__global__ void calculateBuffer(uint8_t *image_buffer, float power, float3 rayOrigin)
+__global__ void calculateBuffer(uint8_t *image_buffer, float power, float3 rayOrigin,  distanceFunction func)
 {
   // TODO: dynamically change the distance estimation function
-  distanceFunction func = distEstMandelBulb;
+  //distanceFunction func = distEstMandelBulb;
 
   int row = blockIdx.y * blockDim.y + threadIdx.y; // WIDTH
   int col = blockIdx.x * blockDim.x + threadIdx.x; // HEIGHT
@@ -146,6 +154,8 @@ __global__ void calculateBuffer(uint8_t *image_buffer, float power, float3 rayOr
   if (col >= WIDTH || row >= HEIGHT)
     return;
 
+
+  // Calculate the ray origin from the centre of the pixel
   float x0 = ((float)col / WIDTH) * 2.0f - 1.0f;
   float y0 = ((float)row / HEIGHT) * 2.0f - 1.0f;
   float3 center_dir = norm(make_float3(0, 0, 0) - rayOrigin);
@@ -164,14 +174,14 @@ __global__ void calculateBuffer(uint8_t *image_buffer, float power, float3 rayOr
   image_buffer[idx + 3] = 255;
 }
 
-void runKernel(sf::Uint8 *image_buffer, float power)
+void runKernel(sf::Uint8 *image_buffer, float power, float3 rayOrigin, distanceFunction func)
 {
   // Runs the CUDA kernel and copies the result back to memory.
   uint8_t *d_image_buffer;
   cudaAssertSuccess(cudaMalloc(&d_image_buffer, WIDTH * HEIGHT * IMG_CH));
   dim3 block_size(16, 16);
   dim3 grid_size(WIDTH / block_size.x, HEIGHT / block_size.y);
-  calculateBuffer<<<grid_size, block_size>>>(d_image_buffer, power, rayOrigin);
+  calculateBuffer<<<grid_size, block_size>>>(d_image_buffer, power, rayOrigin, func);
 
   cudaAssertSuccess(cudaPeekAtLastError());
   cudaAssertSuccess(cudaDeviceSynchronize());
@@ -179,23 +189,8 @@ void runKernel(sf::Uint8 *image_buffer, float power)
   cudaAssertSuccess(cudaFree(d_image_buffer));
 }
 
-
-float getPower(float time, bool isMandel)
-{
-  // Calculates what the power/scale of the fractal should be to produce a nice smooth animation
-  if (isMandel)
-  {
-    // For Mandelbulb we just scale between 1 and 16.
-    float tMod = fmodf(time / 3, 3) + 1;
-    return tMod * tMod;
-  }
-  else
-  {
-    // For MandelBox, we aviod the range [1, -1] and instead display from [-3, -1] and [1, 3]
-    float tMod = fmodf(time / 4, 4) - 2;
-    return tMod < 0 ? tMod - 1 : tMod + 1;
-  }
-}
+__device__ distanceFunction p_bulbDev = distEstMandelBulb;
+__device__ distanceFunction p_boxDev = distEstMandelBox;
 
 
 int renderLoop()
@@ -214,6 +209,7 @@ int renderLoop()
 
   bool changePower = true;
   bool isMandel = true;
+  float3 rayOrigin = make_float3(0.f, 0.f, -2.f);
 
   float draw_time = 0;
 
@@ -223,6 +219,15 @@ int renderLoop()
   double viewR = 1.0;
 
   float renderTime = 0.0;
+
+  // Setup distanace estimation pointers
+  distanceFunction boxDistance;
+  distanceFunction bulbDistance;
+  distanceFunction * currDistFunc =  &boxDistance;
+	cudaMemcpyFromSymbol(&boxDistance, p_boxDev, sizeof(distanceFunction));
+	cudaMemcpyFromSymbol(&bulbDistance, p_bulbDev, sizeof(distanceFunction));
+
+  //
   while (window.isOpen())
   {
     sf::Event event;
@@ -259,6 +264,8 @@ int renderLoop()
     // Use the draw time to control the amount of seconds to spend while
     draw_time = clock.restart().asSeconds();
 
+
+    // Control the rotation
     if (sf::Keyboard::isKeyPressed(sf::Keyboard::Right))
     {
       hAngle += 1.0 * draw_time;
@@ -276,10 +283,20 @@ int renderLoop()
       vAngle -= 1.0 * draw_time;
     }
 
+
+    // TODO: refactor this into a list as more fractal types are added.
+    if (sf::Keyboard::isKeyPressed(sf::Keyboard::Num1))
+    {
+      currDistFunc = &boxDistance;
+    }
+    if (sf::Keyboard::isKeyPressed(sf::Keyboard::Num2))
+    {
+      currDistFunc = &bulbDistance;
+    }
+
     rayOrigin.x = sin(hAngle) * cos(vAngle);
     rayOrigin.y = sin(vAngle) * sin(hAngle);
     rayOrigin.z = cos(hAngle);
-
     rayOrigin = rayOrigin * viewR;
 
     if (changePower)
@@ -290,7 +307,7 @@ int renderLoop()
 
     // Currently transfering from the GPU back to the CPU,
     window.clear();
-    runKernel(pixels, getPower(renderTime, isMandel));
+    runKernel(pixels, renderTime, rayOrigin, *currDistFunc);
     text.update(pixels);
     window.draw(imgSprite);
     window.display();
